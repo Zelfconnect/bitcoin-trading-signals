@@ -1,0 +1,11 @@
+{
+  "total_trades": 0,
+  "win_rate": 0,
+  "avg_profit": 0,
+  "avg_loss": 0,
+  "profit_factor": 0,
+  "max_drawdown": 0,
+  "sharpe_ratio": 0,
+  "total_return": 0,
+  "annualized_return": 0
+}

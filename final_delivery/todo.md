@@ -1,0 +1,24 @@
+# Bitcoin Trading Signal System - Todo List
+
+- [x] Clarify user requirements for the Bitcoin futures trading signal system
+- [x] Design trading signal strategy
+  - [x] Research and select optimal technical indicators for 1-minute expiry contracts
+  - [x] Define signal generation rules and thresholds
+  - [x] Develop risk management components (stop-loss, position sizing)
+  - [x] Create strategy for distributing 6 signals throughout the day
+  - [x] Document the complete strategy
+- [x] Implement signal generation agent
+  - [x] Set up data collection for Bitcoin price data
+  - [x] Implement technical indicators and signal logic
+  - [x] Add risk management calculations
+  - [x] Create SMS notification system
+  - [x] Schedule signal generation for 6 times daily
+- [ ] Test and validate signals
+  - [ ] Backtest strategy with historical data
+  - [ ] Evaluate signal accuracy and profitability
+  - [ ] Optimize parameters for best performance
+  - [ ] Conduct forward testing simulation
+- [ ] Finalize and deliver system to user
+  - [ ] Create comprehensive documentation
+  - [ ] Package all components for delivery
+  - [ ] Provide usage instructions
