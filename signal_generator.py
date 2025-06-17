@@ -241,11 +241,16 @@ class SignalGenerator:
             logger.info("Maximum daily signal count reached (6)")
             return None
         
-        # Check current time window (UTC times for Dutch preferences)
+        # MODIFIED: Expanded time windows to cover more hours for better signal generation
+        # Early morning: 03:00-12:00 UTC (04:00-13:00 Dutch time)
+        # Extended evening: 15:00-20:00 UTC (16:00-21:00 Dutch time)  
+        # Late night: 22:00-03:00 UTC (23:00-04:00 Dutch time) for active traders
         current_hour = datetime.datetime.utcnow().hour
         time_windows = [
-            (7, 11),   # Morning: 08:00-11:00 Dutch time (UTC+1/+2)
-            (16, 19)   # Evening: 17:00-19:00 Dutch time (UTC+1/+2)
+            (3, 12),   # Early morning: 04:00-13:00 Dutch time
+            (15, 20),  # Extended evening: 16:00-21:00 Dutch time
+            (22, 24),  # Late night part 1: 23:00-00:00 Dutch time
+            (0, 3)     # Late night part 2: 01:00-04:00 Dutch time (extended)
         ]
         
         in_time_window = False
@@ -255,23 +260,27 @@ class SignalGenerator:
                 break
         
         if not in_time_window:
-            logger.info(f"Current UTC hour {current_hour} is outside Dutch trading windows (07:00-11:00 & 16:00-19:00 UTC)")
+            logger.info(f"Current UTC hour {current_hour} is outside extended trading windows")
             return None
         
         # Add indicators to data
         data_with_indicators = TechnicalIndicators.add_all_indicators(data)
         
-        # Check for buy signal
-        buy_signal, buy_strength = self.check_buy_signal(data_with_indicators)
+        # MODIFIED: More flexible signal generation - use scoring system instead of requiring ALL conditions
+        buy_score = self._calculate_buy_score(data_with_indicators)
+        sell_score = self._calculate_sell_score(data_with_indicators)
         
-        # Check for sell signal
-        sell_signal, sell_strength = self.check_sell_signal(data_with_indicators)
-        
-        # Generate signal if conditions are met
-        if buy_signal and (not sell_signal or buy_strength == "Strong"):
+        # Generate signal if score is high enough (threshold: 2 out of 5 conditions for testing)
+        if buy_score >= 2 and buy_score > sell_score:
             signal_type = "BUY"
             risk_params = self.calculate_risk_management(data_with_indicators, signal_type)
             
+            # Determine strength based on score
+            if buy_score >= 4:
+                strength = "Strong"
+            else:
+                strength = "Moderate"
+            
             signal = {
                 'type': signal_type,
                 'timestamp': datetime.datetime.now().isoformat(),
@@ -280,18 +289,25 @@ class SignalGenerator:
                 'stop_loss': risk_params['stop_loss'],
                 'position_size': risk_params['position_size'],
                 'target': risk_params['primary_target'],
-                'conviction': risk_params['signal_strength']
+                'conviction': strength,
+                'score': f"{buy_score}/5"
             }
             
             self.daily_signal_count += 1
-            logger.info(f"Generated BUY signal ({self.daily_signal_count}/6 for today)")
+            logger.info(f"Generated BUY signal with score {buy_score}/5 ({self.daily_signal_count}/6 for today)")
             
             return signal
             
-        elif sell_signal and (not buy_signal or sell_strength == "Strong"):
+        elif sell_score >= 2 and sell_score > buy_score:
             signal_type = "SELL"
             risk_params = self.calculate_risk_management(data_with_indicators, signal_type)
             
+            # Determine strength based on score
+            if sell_score >= 4:
+                strength = "Strong"
+            else:
+                strength = "Moderate"
+            
             signal = {
                 'type': signal_type,
                 'timestamp': datetime.datetime.now().isoformat(),
@@ -300,16 +316,75 @@ class SignalGenerator:
                 'stop_loss': risk_params['stop_loss'],
                 'position_size': risk_params['position_size'],
                 'target': risk_params['primary_target'],
-                'conviction': risk_params['signal_strength']
+                'conviction': strength,
+                'score': f"{sell_score}/5"
             }
             
             self.daily_signal_count += 1
-            logger.info(f"Generated SELL signal ({self.daily_signal_count}/6 for today)")
+            logger.info(f"Generated SELL signal with score {sell_score}/5 ({self.daily_signal_count}/6 for today)")
             
             return signal
         
-        logger.info("No signal generated")
+        logger.info(f"No signal generated (buy_score: {buy_score}, sell_score: {sell_score})")
         return None
+    
+    def _calculate_buy_score(self, data):
+        """Calculate buy signal score (0-5) based on multiple conditions."""
+        latest = data.iloc[-1]
+        previous = data.iloc[-2]
+        score = 0
+        
+        # 1. RSI oversold recovery (more flexible)
+        if latest['rsi'] < 40 and latest['rsi'] > previous['rsi']:  # RSI improving from oversold
+            score += 1
+            
+        # 2. Price near or below Bollinger Lower Band
+        if latest['close'] <= latest['bb_lower'] * 1.01:  # Within 1% of lower band
+            score += 1
+            
+        # 3. MACD improvement (more flexible)
+        if latest['macd'] > previous['macd']:  # MACD improving
+            score += 1
+            
+        # 4. Stochastic oversold (more flexible)
+        if latest['stoch_k'] < 30 and latest['stoch_k'] > previous['stoch_k']:  # Improving from oversold
+            score += 1
+            
+        # 5. Volume confirmation
+        volume_avg = data['volume'].rolling(window=10).mean().iloc[-1]
+        if latest['volume'] > volume_avg * 1.2:  # Volume 20% above average
+            score += 1
+            
+        return score
+    
+    def _calculate_sell_score(self, data):
+        """Calculate sell signal score (0-5) based on multiple conditions."""
+        latest = data.iloc[-1]
+        previous = data.iloc[-2]
+        score = 0
+        
+        # 1. RSI overbought decline (more flexible)
+        if latest['rsi'] > 60 and latest['rsi'] < previous['rsi']:  # RSI declining from overbought
+            score += 1
+            
+        # 2. Price near or above Bollinger Upper Band
+        if latest['close'] >= latest['bb_upper'] * 0.99:  # Within 1% of upper band
+            score += 1
+            
+        # 3. MACD deterioration (more flexible)
+        if latest['macd'] < previous['macd']:  # MACD declining
+            score += 1
+            
+        # 4. Stochastic overbought (more flexible)
+        if latest['stoch_k'] > 70 and latest['stoch_k'] < previous['stoch_k']:  # Declining from overbought
+            score += 1
+            
+        # 5. Volume confirmation
+        volume_avg = data['volume'].rolling(window=10).mean().iloc[-1]
+        if latest['volume'] > volume_avg * 1.2:  # Volume 20% above average
+            score += 1
+            
+        return score
     
     def format_sms_message(self, signal):
         """
