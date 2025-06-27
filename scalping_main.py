@@ -10,7 +10,7 @@ import os
 import time
 import logging
 import argparse
-from datetime import datetime
+from datetime import datetime, timedelta
 from data_collector import BitcoinDataCollector
 from scalping_signal_generator import ScalpingSignalGenerator
 from telegram_notifier import TelegramNotifier
@@ -56,6 +56,10 @@ class ScalpingSystem:
         self.consecutive_losses = 0
         self.max_daily_signals = 10  # Reasonable limit to prevent overtrading
         
+        # Track active signals for outcome monitoring
+        self.active_signals = []  # List of signals awaiting outcome
+        self.signal_history = []  # Complete history with outcomes
+        
         logger.info(f"Scalping System initialized - checking every {check_interval} seconds")
     
     def format_telegram_message(self, signal):
@@ -99,11 +103,97 @@ _Signal #{self.signals_sent_today + 1} today_
         
         return message.strip()
     
+    def check_signal_outcomes(self):
+        """
+        Check the outcome of active signals and update consecutive losses.
+        """
+        if not self.active_signals:
+            return
+        
+        # Get current price
+        try:
+            current_data = self.data_collector.fetch_latest_data(limit=1)
+            current_price = current_data['close'].iloc[-1]
+            current_time = datetime.now()
+        except Exception as e:
+            logger.error(f"Error fetching current price for outcome check: {e}")
+            return
+        
+        signals_to_remove = []
+        
+        for signal in self.active_signals:
+            signal_time = datetime.fromisoformat(signal['timestamp'])
+            time_elapsed = (current_time - signal_time).total_seconds()
+            
+            # Check if signal has expired (5 minutes for binary options)
+            if time_elapsed >= 300:  # 5 minutes
+                outcome = None
+                
+                if signal['type'] == 'BUY':
+                    # For BUY: win if price went up
+                    if current_price >= signal['take_profit']:
+                        outcome = 'WIN'
+                    elif current_price <= signal['stop_loss']:
+                        outcome = 'LOSS'
+                    else:
+                        # Check if price is higher than entry
+                        outcome = 'WIN' if current_price > signal['price'] else 'LOSS'
+                else:  # SELL
+                    # For SELL: win if price went down
+                    if current_price <= signal['take_profit']:
+                        outcome = 'WIN'
+                    elif current_price >= signal['stop_loss']:
+                        outcome = 'LOSS'
+                    else:
+                        # Check if price is lower than entry
+                        outcome = 'WIN' if current_price < signal['price'] else 'LOSS'
+                
+                # Update consecutive losses
+                if outcome == 'LOSS':
+                    self.consecutive_losses += 1
+                    logger.warning(f"Signal LOSS - consecutive losses: {self.consecutive_losses}")
+                    
+                    # Send loss notification
+                    loss_message = f"❌ <b>SIGNAL OUTCOME - LOSS</b>\n\n"
+                    loss_message += f"Signal: {signal['type']} at ${signal['price']:,.2f}\n"
+                    loss_message += f"Current: ${current_price:,.2f}\n"
+                    loss_message += f"Result: {((current_price/signal['price'])-1)*100:+.2f}%\n"
+                    loss_message += f"Consecutive Losses: {self.consecutive_losses}/3"
+                    
+                    self.telegram_notifier.send_message(loss_message)
+                else:  # WIN
+                    self.consecutive_losses = 0  # Reset on win
+                    logger.info(f"Signal WIN - consecutive losses reset to 0")
+                    
+                    # Send win notification
+                    win_message = f"✅ <b>SIGNAL OUTCOME - WIN</b>\n\n"
+                    win_message += f"Signal: {signal['type']} at ${signal['price']:,.2f}\n"
+                    win_message += f"Current: ${current_price:,.2f}\n"
+                    win_message += f"Result: {((current_price/signal['price'])-1)*100:+.2f}%"
+                    
+                    self.telegram_notifier.send_message(win_message)
+                
+                # Add outcome to signal and move to history
+                signal['outcome'] = outcome
+                signal['outcome_price'] = current_price
+                signal['outcome_time'] = current_time.isoformat()
+                self.signal_history.append(signal)
+                signals_to_remove.append(signal)
+                
+                logger.info(f"Signal outcome: {outcome} - Entry: ${signal['price']:,.2f}, Exit: ${current_price:,.2f}")
+        
+        # Remove processed signals from active list
+        for signal in signals_to_remove:
+            self.active_signals.remove(signal)
+    
     def check_market_conditions(self):
         """
         Check current market conditions for scalping opportunities.
         """
         try:
+            # First check outcomes of any active signals
+            self.check_signal_outcomes()
+            
             # Reset daily counter if new day
             current_date = datetime.now().date()
             if self.last_signal_date != current_date:
@@ -120,6 +210,14 @@ _Signal #{self.signals_sent_today + 1} today_
             # Stop if too many consecutive losses (circuit breaker)
             if self.consecutive_losses >= 3:
                 logger.warning("Circuit breaker activated - 3 consecutive losses")
+                
+                # Send circuit breaker notification
+                cb_message = "🛑 <b>CIRCUIT BREAKER ACTIVATED</b>\n\n"
+                cb_message += "3 consecutive losses detected.\n"
+                cb_message += "Trading suspended for safety.\n"
+                cb_message += "Manual review recommended."
+                
+                self.telegram_notifier.send_message(cb_message)
                 return
             
             # Fetch latest market data
@@ -130,15 +228,14 @@ _Signal #{self.signals_sent_today + 1} today_
             signal = self.signal_generator.generate_scalping_signal(data)
             
             if signal:
+                # Add to active signals for tracking
+                self.active_signals.append(signal)
+                
                 # Save signal
                 self.signal_generator.save_signal(signal)
                 
                 # Send Telegram notification
-                message = self.format_telegram_message(signal)
-                self.telegram_notifier.send_signal_notification({
-                    'message': message,
-                    'parse_mode': 'Markdown'
-                })
+                success = self.telegram_notifier.send_signal_notification(signal)
                 
                 self.signals_sent_today += 1
                 logger.info(f"Sent {signal['type']} signal #{self.signals_sent_today} - {signal['quality']} quality")
@@ -153,6 +250,27 @@ _Signal #{self.signals_sent_today + 1} today_
             logger.error(f"Error checking market conditions: {e}")
             # Don't crash the system - continue monitoring
     
+    def get_performance_stats(self):
+        """
+        Calculate and return performance statistics.
+        """
+        if not self.signal_history:
+            return "No completed signals yet."
+        
+        wins = sum(1 for s in self.signal_history if s.get('outcome') == 'WIN')
+        losses = sum(1 for s in self.signal_history if s.get('outcome') == 'LOSS')
+        total = len(self.signal_history)
+        
+        win_rate = (wins / total * 100) if total > 0 else 0
+        
+        stats = f"📊 **Performance Stats**\n"
+        stats += f"Total Signals: {total}\n"
+        stats += f"Wins: {wins} ({win_rate:.1f}%)\n"
+        stats += f"Losses: {losses}\n"
+        stats += f"Current Streak: {self.consecutive_losses} losses"
+        
+        return stats
+    
     def run_continuous_monitoring(self):
         """
         Run continuous market monitoring for scalping opportunities.
@@ -161,6 +279,7 @@ _Signal #{self.signals_sent_today + 1} today_
         logger.info(f"Maximum {self.max_daily_signals} signals per day")
         logger.info(f"Minimum 5 minutes between signals")
         logger.info("Monitoring for high-probability setups only...")
+        logger.info("Circuit breaker will activate after 3 consecutive losses")
         
         try:
             while True:
@@ -169,6 +288,11 @@ _Signal #{self.signals_sent_today + 1} today_
                 
         except KeyboardInterrupt:
             logger.info("Scalping system stopped by user")
+            
+            # Show final performance stats
+            print("\n" + "="*60)
+            print(self.get_performance_stats())
+            print("="*60)
         except Exception as e:
             logger.error(f"Critical error in scalping system: {e}")
             raise
@@ -230,6 +354,9 @@ _Signal #{self.signals_sent_today + 1} today_
                 print("❌ No signal - conditions not strong enough")
                 print(f"Need at least 4/7 conditions (currently BUY:{buy_score}, SELL:{sell_score})")
             
+            print("\n" + "-"*60)
+            print(f"Circuit Breaker Status: {self.consecutive_losses}/3 losses")
+            print(f"Active Signals: {len(self.active_signals)}")
             print("="*60 + "\n")
             
         except Exception as e:

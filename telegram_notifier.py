@@ -202,42 +202,50 @@ class TelegramNotifier:
             # Format the signal as a Telegram message with HTML formatting
             signal_type = signal.get('type', 'N/A')
             signal_emoji = "🟢" if signal_type == "BUY" else "🔴" if signal_type == "SELL" else "⚪"
+            quality = signal.get('quality', 'N/A')
+            score = signal.get('score', 'N/A')
+            
+            # Quality emojis
+            quality_emoji = {
+                "VERY STRONG": "🔥🔥🔥",
+                "STRONG": "🔥🔥", 
+                "MODERATE": "🔥",
+                "WEAK": "⚠️"
+            }.get(quality, "")
+            
+            # Conditions met
+            conditions = signal.get('conditions', [])
+            conditions_text = "\n".join([f"✓ {cond}" for cond in conditions])
             
             timestamp_str = signal.get('timestamp', datetime.now().isoformat())
             try:
-                formatted_time = datetime.fromisoformat(timestamp_str).strftime('%Y-%m-%d %H:%M:%S UTC')
+                formatted_time = datetime.fromisoformat(timestamp_str).strftime('%H:%M:%S')
             except:
-                formatted_time = timestamp_str
-            
-            # Calculate recommended entry time (3 minutes from now)
-            from datetime import timedelta
-            import pytz
-            
-            # Get current time in UTC and Dutch timezone
-            utc_now = datetime.now(pytz.UTC)
-            dutch_tz = pytz.timezone('Europe/Amsterdam')
-            dutch_now = utc_now.astimezone(dutch_tz)
-            
-            # Entry times
-            entry_time_utc = utc_now + timedelta(minutes=3)
-            entry_time_dutch = entry_time_utc.astimezone(dutch_tz)
-            
-            entry_time_str = f"{entry_time_dutch.strftime('%H:%M')} NL / {entry_time_utc.strftime('%H:%M')} UTC"
+                formatted_time = datetime.now().strftime('%H:%M:%S')
             
             message = f"""
-{signal_emoji} <b>BITCOIN SIGNAL #{signal.get('signal_number', 'N/A')}</b>
+{signal_emoji} <b>SCALPING SIGNAL - {signal_type}</b> {quality_emoji}
 
-📊 <b>Type:</b> {signal_type}
-⏰ <b>Signal Time:</b> {dutch_now.strftime('%H:%M:%S')} Amsterdam
-🚀 <b>ENTER TRADE AT:</b> {entry_time_str}
-⏳ <b>Expiry:</b> {signal.get('expiry', '5 minutes')}
-🎯 <b>Target:</b> +1%
-🛑 <b>Stop-Loss:</b> ${signal.get('stop_loss', 0):.2f}
-💰 <b>Position Size:</b> {signal.get('position_size', 0)*100:.1f}%
-💪 <b>Conviction:</b> {signal.get('conviction', 'N/A')}
+📊 <b>Signal Quality:</b> {quality} ({score})
+💰 <b>Entry Price:</b> ${signal.get('price', 0):,.2f}
+🎯 <b>Target:</b> ${signal.get('take_profit', 0):,.2f} (+{((signal.get('take_profit', 0)/signal.get('price', 1))-1)*100:.1f}%)
+🛑 <b>Stop Loss:</b> ${signal.get('stop_loss', 0):,.2f} (-{(1-(signal.get('stop_loss', 0)/signal.get('price', 1)))*100:.1f}%)
+⏱️ <b>Expiry:</b> {signal.get('expiry', '5 minutes')}
+💼 <b>Position Size:</b> {signal.get('position_size', 0)*100:.1f}% of capital
 
-⚡ <b>You have 3 minutes to prepare your trade!</b>
-💡 <i>Trade at your own risk. This is not financial advice.</i>
+📈 <b>Market Conditions Met:</b>
+{conditions_text}
+
+📊 <b>Key Indicators:</b>
+• RSI: {signal.get('indicators', {}).get('rsi', 0):.1f}
+• MACD: {signal.get('indicators', {}).get('macd', 0):.2f}
+• BB Position: {signal.get('indicators', {}).get('bb_position', 'N/A')}
+• Volume Ratio: {signal.get('indicators', {}).get('volume_ratio', 0):.1f}x avg
+
+⚡ <b>Action: Enter {signal_type} position NOW</b>
+⏰ <b>Time:</b> {formatted_time}
+
+<i>Professional scalping signal - Trade at your own risk.</i>
             """.strip()
             
             # Send the message
