@@ -9,7 +9,8 @@ import os
 import json
 import logging
 import requests
-from datetime import datetime
+import pytz
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Union
 
 # Configure logging
@@ -39,6 +40,9 @@ class TelegramNotifier:
         self.config = self._load_config()
         self.base_url = f"https://api.telegram.org/bot{self.config['bot_token']}"
         self.timeout = 30  # Request timeout in seconds
+        
+        # Setup Dutch timezone
+        self.dutch_tz = pytz.timezone('Europe/Amsterdam')
         
         # Validate configuration
         self._validate_config()
@@ -188,6 +192,26 @@ class TelegramNotifier:
         
         return success
     
+    def _get_dutch_time(self, timestamp=None):
+        """
+        Get current time in Dutch timezone or convert provided timestamp.
+        
+        Args:
+            timestamp (datetime, optional): Timestamp to convert. If None, uses current time.
+            
+        Returns:
+            datetime: Time in Amsterdam timezone
+        """
+        if timestamp is None:
+            utc_now = datetime.utcnow().replace(tzinfo=pytz.UTC)
+        else:
+            if timestamp.tzinfo is None:
+                utc_now = timestamp.replace(tzinfo=pytz.UTC)
+            else:
+                utc_now = timestamp.astimezone(pytz.UTC)
+        
+        return utc_now.astimezone(self.dutch_tz)
+    
     def send_signal_notification(self, signal: Dict) -> bool:
         """
         Send a signal notification via Telegram.
@@ -217,20 +241,53 @@ class TelegramNotifier:
             conditions = signal.get('conditions', [])
             conditions_text = "\n".join([f"✓ {cond}" for cond in conditions])
             
+            # Handle timestamp and convert to Dutch time
             timestamp_str = signal.get('timestamp', datetime.now().isoformat())
             try:
-                formatted_time = datetime.fromisoformat(timestamp_str).strftime('%H:%M:%S')
-            except:
-                formatted_time = datetime.now().strftime('%H:%M:%S')
+                if isinstance(timestamp_str, str):
+                    signal_timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00'))
+                else:
+                    signal_timestamp = timestamp_str
+                
+                dutch_time = self._get_dutch_time(signal_timestamp)
+                formatted_time = dutch_time.strftime('%H:%M:%S')
+                formatted_date = dutch_time.strftime('%d-%m-%Y')
+                timezone_name = dutch_time.strftime('%Z')  # CET or CEST
+                
+                # Calculate optimal entry time (add 2-3 minutes for preparation)
+                optimal_entry_time = dutch_time + timedelta(minutes=2)
+                entry_time_str = optimal_entry_time.strftime('%H:%M')
+                
+            except Exception as e:
+                logger.warning(f"Error parsing timestamp {timestamp_str}: {e}")
+                dutch_time = self._get_dutch_time()
+                formatted_time = dutch_time.strftime('%H:%M:%S')
+                formatted_date = dutch_time.strftime('%d-%m-%Y')
+                timezone_name = dutch_time.strftime('%Z')
+                
+                from datetime import timedelta
+                optimal_entry_time = dutch_time + timedelta(minutes=2)
+                entry_time_str = optimal_entry_time.strftime('%H:%M')
+            
+            # Determine trade action
+            action_text = "📈 <b>CALL (UP)</b>" if signal_type == "BUY" else "📉 <b>PUT (DOWN)</b>"
             
             message = f"""
 {signal_emoji} <b>SCALPING SIGNAL - {signal_type}</b> {quality_emoji}
 
 📊 <b>Signal Quality:</b> {quality} ({score})
 💰 <b>Entry Price:</b> ${signal.get('price', 0):,.2f}
+{action_text}
+
+⏰ <b>TIMING INSTRUCTIONS:</b>
+🇳🇱 <b>Signal Time:</b> {formatted_time} {timezone_name}
+🚀 <b>ENTER TRADE AT:</b> {entry_time_str} Amsterdam
+⏳ <b>Expiry:</b> {signal.get('expiry', '5 minutes')}
+⚡ <b>You have ~2 minutes to prepare!</b>
+
+💼 <b>Trade Details:</b>
 🎯 <b>Target:</b> ${signal.get('take_profit', 0):,.2f} (+{((signal.get('take_profit', 0)/signal.get('price', 1))-1)*100:.1f}%)
 🛑 <b>Stop Loss:</b> ${signal.get('stop_loss', 0):,.2f} (-{(1-(signal.get('stop_loss', 0)/signal.get('price', 1)))*100:.1f}%)
-⏱️ <b>Expiry:</b> {signal.get('expiry', '5 minutes')}
 💼 <b>Position Size:</b> {signal.get('position_size', 0)*100:.1f}% of capital
 
 📈 <b>Market Conditions Met:</b>
@@ -242,8 +299,12 @@ class TelegramNotifier:
 • BB Position: {signal.get('indicators', {}).get('bb_position', 'N/A')}
 • Volume Ratio: {signal.get('indicators', {}).get('volume_ratio', 0):.1f}x avg
 
-⚡ <b>Action: Enter {signal_type} position NOW</b>
-⏰ <b>Time:</b> {formatted_time}
+<b>📱 ACTION REQUIRED:</b>
+1️⃣ Open your trading platform NOW
+2️⃣ Navigate to Bitcoin options
+3️⃣ Select {action_text} at {entry_time_str}
+4️⃣ Set 5-minute expiry
+5️⃣ Use recommended position size
 
 <i>Professional scalping signal - Trade at your own risk.</i>
             """.strip()

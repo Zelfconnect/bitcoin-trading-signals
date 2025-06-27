@@ -36,31 +36,28 @@ class ScalpingSystem:
         Initialize the scalping system.
         
         Args:
-            check_interval (int): Seconds between market condition checks (default: 30)
+            check_interval (int): How often to check market conditions (seconds)
         """
         self.check_interval = check_interval
-        
-        # Create necessary directories
-        os.makedirs('data', exist_ok=True)
-        os.makedirs('signals', exist_ok=True)
-        os.makedirs('config', exist_ok=True)
+        self.max_daily_signals = 8  # Maximum signals per day
+        self.signals_sent_today = 0
+        self.last_signal_date = None
+        self.consecutive_losses = 0
+        self.circuit_breaker_notified = False  # Track if circuit breaker notification sent
+        self.signal_history = []  # Store completed signals
+        self.active_signals = []  # Store active signals for tracking
         
         # Initialize components
         self.data_collector = BitcoinDataCollector()
         self.signal_generator = ScalpingSignalGenerator()
         self.telegram_notifier = TelegramNotifier()
         
-        # Track statistics
-        self.signals_sent_today = 0
-        self.last_signal_date = None
-        self.consecutive_losses = 0
-        self.max_daily_signals = 10  # Reasonable limit to prevent overtrading
+        # Create necessary directories
+        os.makedirs('data', exist_ok=True)
+        os.makedirs('signals', exist_ok=True)
+        os.makedirs('config', exist_ok=True)
         
-        # Track active signals for outcome monitoring
-        self.active_signals = []  # List of signals awaiting outcome
-        self.signal_history = []  # Complete history with outcomes
-        
-        logger.info(f"Scalping System initialized - checking every {check_interval} seconds")
+        logger.info(f"Scalping system initialized with {check_interval}s check interval")
     
     def format_telegram_message(self, signal):
         """
@@ -200,6 +197,7 @@ _Signal #{self.signals_sent_today + 1} today_
                 self.signals_sent_today = 0
                 self.last_signal_date = current_date
                 self.consecutive_losses = 0
+                self.circuit_breaker_notified = False  # Reset circuit breaker notification
                 logger.info("New trading day - counters reset")
             
             # Check daily limit
@@ -209,15 +207,21 @@ _Signal #{self.signals_sent_today + 1} today_
             
             # Stop if too many consecutive losses (circuit breaker)
             if self.consecutive_losses >= 3:
-                logger.warning("Circuit breaker activated - 3 consecutive losses")
-                
-                # Send circuit breaker notification
-                cb_message = "🛑 <b>CIRCUIT BREAKER ACTIVATED</b>\n\n"
-                cb_message += "3 consecutive losses detected.\n"
-                cb_message += "Trading suspended for safety.\n"
-                cb_message += "Manual review recommended."
-                
-                self.telegram_notifier.send_message(cb_message)
+                if not self.circuit_breaker_notified:
+                    logger.warning("Circuit breaker activated - 3 consecutive losses")
+                    
+                    # Send circuit breaker notification only once
+                    cb_message = "🛑 <b>CIRCUIT BREAKER ACTIVATED</b>\n\n"
+                    cb_message += "3 consecutive losses detected.\n"
+                    cb_message += "Trading suspended for safety.\n"
+                    cb_message += "Manual review recommended.\n\n"
+                    cb_message += "<i>System will resume on next trading day.</i>"
+                    
+                    self.telegram_notifier.send_message(cb_message)
+                    self.circuit_breaker_notified = True
+                    logger.info("Circuit breaker notification sent - no more notifications until reset")
+                else:
+                    logger.debug("Circuit breaker active - notification already sent")
                 return
             
             # Fetch latest market data
